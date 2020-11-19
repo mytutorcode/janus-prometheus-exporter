@@ -1,0 +1,32 @@
+version: "3"
+services:
+  janus:
+    image: canyan/janus-gateway
+    container_name: janus
+    volumes:
+      - $PWD/conf:/usr/local/etc/janus
+      - $PWD/certs:/certs
+    ports:
+      - 80:80
+      - 7088:7088
+      - 8088:8088
+      - 8188:8188
+      - 8989:8989
+      - 10000-10200/udp
+    command: ["/usr/local/bin/janus", "-e"]
+
+  janus-prometheus-exportor:
+    container_name: janus-prom-exporter
+    image: janus-prometheus-exporter:latest
+    ports:
+      - 8085:8085
+    depends_on:
+      - janus
+
+  janus-echo:
+    container_name: janus-echo
+    image: deyceg/janus-echo:latest
+    environment:
+      JANUS_URL: "janus.local:8989"
+    ports:
+      - 8080:8080
