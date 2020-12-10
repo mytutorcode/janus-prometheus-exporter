@@ -25,11 +25,26 @@ backend = http://localhost:8085/event
 
 ## Implemented metrics
 
+### WebRTC
+
+ * Number of active websockets
+ * Total websocket connections
+ * Total websocket disconnects
+ * Total peer connections
+ * Total ICE connections
+ * Total ICE disconnects
+ * Number of media streams [audio,video]
+
+### VideoRoom
  * Number of active rooms
- * Number of active users
  * Total rooms
+ * Number of active users
  * Total users
- * Average user duration
+ * Average user session duration
+ * Number of publishers
+ * Number of subscribers
+ * Total subscribing (after offer/before answer)
+ * Total subscription errors
 
 ## Development & Testing
 

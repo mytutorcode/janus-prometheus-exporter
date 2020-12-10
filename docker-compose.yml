@@ -15,9 +15,10 @@ services:
       - 10000-10200/udp
     command: ["/usr/local/bin/janus", "-e"]
 
-  janus-prometheus-exportor:
+  janus-prometheus-exporter:
     container_name: janus-prom-exporter
-    image: janus-prometheus-exporter:latest
+    build:
+      context: .
     ports:
       - 8085:8085
     depends_on:
@@ -28,5 +29,6 @@ services:
     image: deyceg/janus-echo:latest
     environment:
       JANUS_URL: "janus.local:8989"
+      ROOM_ID: "1234"
     ports:
       - 8080:8080
