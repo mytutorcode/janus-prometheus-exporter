@@ -1,6 +1,6 @@
 {
   "name": "janus-prometheus-exporter",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Receive and store events from a Janus server",
   "main": "src/server.js",
   "bin": "src/server.js",
