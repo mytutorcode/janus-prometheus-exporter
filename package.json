@@ -1,5 +1,5 @@
 {
-  "name": "janus-event-server",
+  "name": "janus-prometheus-exporter",
   "version": "0.0.1",
   "description": "Receive and store events from a Janus server",
   "main": "src/server.js",

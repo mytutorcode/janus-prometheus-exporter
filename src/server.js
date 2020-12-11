@@ -23,34 +23,77 @@ const labels = {
 };
 collectDefaultMetrics({ prefix, labels });
 
-const sessionGauge = new client.Gauge({
-  name: "sessions_active",
-  help: "Tracks the number of active sessions on the server",
-});
-sessionGauge.set(0);
 const roomGauge = new client.Gauge({
   name: "rooms_active",
   help: "Tracks the number of active rooms (read: lessons)",
 });
 roomGauge.set(0);
+const roomTotal = new client.Gauge({
+  name: "rooms_total",
+  help: "Tracks the number of total rooms since server start",
+});
 const usersGauge = new client.Gauge({
   name: "users_active",
   help: "Tracks the number of active users (read: lessons) in a room",
 });
 usersGauge.set(0);
-const sessionStat = new client.Counter({
-  name: "sessions_total",
-  help: "Tracks the number of total sessions this server has processed",
+const usersCounter = new client.Counter({
+  name: "users_total",
+  help: "Tracks the number of total users since server start",
 });
 const userSessionDurationHist = new client.Histogram({
   name: "users_session_duration",
-  help:
-    "Tracks session duration for a user in minutes (Note: this is not a unique user i.e. by name the id may change if they CTRL+R)",
-  buckets: [10, 20, 30, 40, 50],
+  help: "Tracks session duration for a user in minutes",
+  buckets: client.linearBuckets(0, 10, 7)
 });
-
-let roomCache = {};
-let userCache = {};
+const peerConnectionsCounter = new client.Counter({
+  name: "server_peerconnections_total",
+  help: "Tracks the total peer connections since server restart",
+});
+const iceConnectionsCounter = new client.Counter({
+  name: "server_ice_connections_total",
+  help: "Tracks the total ICE connections since server restart",
+});
+const iceDisconnectsCounter = new client.Counter({
+  name: "server_ice_disconnects_total",
+  help: "Tracks the total ICE disconnects since server restart",
+});
+const publishersGauge = new client.Gauge({
+  name: "server_publishers_active",
+  help: "Tracks the number of active publishers",
+})
+const subscribingTotal = new client.Counter({
+  name: "server_subscribing_total",
+  help: "Tracks the total number of attempts to subscribe to a remote feed (before answer)",
+})
+const subscribersGauge = new client.Gauge({
+  name: "server_subscribers_active",
+  help: "Tracks the number of active publishers",
+})
+const subscribersTotal = new client.Counter({
+  name: "server_subscribers_total",
+  help: "Tracks the number of completed subscriptions",
+})
+const mediaCounter = new client.Counter({
+  name: "server_media_total",
+  help: "Tracks the total number of media streams being received by Janus",
+  labelNames: ["type"]
+})
+const webSocketActiveConnections = new client.Gauge({
+  name: "server_websocket_active",
+  help: "Tracks the active websocket connections to the server"
+})
+const webSocketConnectionsCounter = new client.Counter({
+  name: "server_websocket_connections_total",
+  help: "Tracks the total of websocket connections to the server"
+})
+const webSocketDisconnectsCounter = new client.Counter({
+  name: "server_websocket_disconnects_total",
+  help: "Tracks the total of websocket disconnects from the server"
+})
+let rooms = new Map();
+let users = new Map();
+let publishers = new Map();
 
 var app = express();
 
@@ -134,18 +177,11 @@ const eventHandler = (json) => {
     }
     return;
   }
-  // console.log(JSON.stringify(json, null, 2));
   if (json.type === 1) {
     // Session event
     var sessionId = json["session_id"];
     var event = json["event"]["name"];
     var when = new Date(json["timestamp"] / 1000);
-    if (event === "created") {
-      sessionGauge.inc();
-      sessionStat.inc();
-    } else if (event === "destroyed") {
-      sessionGauge.dec();
-    }
   } else if (json.type === 2) {
     // Handle event
     var sessionId = json["session_id"];
@@ -153,7 +189,6 @@ const eventHandler = (json) => {
     var event = json["event"]["name"];
     var plugin = json["event"]["plugin"];
     var when = new Date(json["timestamp"] / 1000);
-    // TODO: gauge up
   } else if (json.type === 8) {
     // JSEP event
     var sessionId = json["session_id"];
@@ -162,7 +197,6 @@ const eventHandler = (json) => {
     var offer = json["event"]["jsep"]["type"] === "offer";
     var sdp = json["event"]["jsep"]["sdp"];
     var when = new Date(json["timestamp"] / 1000);
-    // TODO: ???
   } else if (json.type === 16) {
     // WebRTC event (can result in writes to different tables)
     var sessionId = json["session_id"];
@@ -171,26 +205,22 @@ const eventHandler = (json) => {
     var componentId = json["event"]["component_id"];
     var when = new Date(json["timestamp"] / 1000);
     if (json["event"]["ice"]) {
-      // ICE state event
       var state = json["event"]["ice"];
-      // Write to DB
-      logger.info(state);
-      // TODO:
-    } else if (json["event"]["selected-pair"]) {
-      // ICE selected-pair event
-      var pair = json["event"]["selected-pair"];
-      logger.info(pair);
-      // TODO:
-    } else if (json["event"]["dtls"]) {
-      // DTLS state event
-      var state = json["event"]["dtls"];
-      logger.info(state);
-      // TODO:
-    } else if (json["event"]["connection"]) {
-      // Connection (up/down) event
+      if (state === "connected") {
+        iceConnectionsCounter.inc();
+      }
+      else if (state === "disconnected") {
+        iceDisconnectsCounter.inc();
+      }
+    }
+    else if (json["event"]["connection"]) {
       var state = json["event"]["connection"];
-      logger.info(state);
-      // TODO:
+      if (state === "webrtcup") {
+        peerConnectionsCounter.inc()
+      }
+      else if (state === "hangup") {
+        // TODO
+      }
     } else {
       console.error("Unsupported WebRTC event?");
     }
@@ -206,7 +236,17 @@ const eventHandler = (json) => {
     ) {
       // Media receiving state event
       var receiving = json["event"]["receiving"] === true;
-      // TODO:
+      const pub = publishers.get(handleId)
+      if (receiving) {
+        if (medium === "audio" && !pub.audio) {
+          publishers.set(handleId, Object.assign(publishers.get(handleId) || {}, {audio: true}))
+          mediaCounter.inc({ type: "audio" }, 1);
+        }
+        else if (medium === "video" && !pub.video) {
+          publishers.set(handleId, Object.assign(publishers.get(handleId) || {}, {video: true}))
+            mediaCounter.inc({ type: "video" }, 1);
+        }
+      };
     } else if (
       json["event"]["base"] !== null &&
       json["event"]["base"] !== undefined
@@ -233,46 +273,137 @@ const eventHandler = (json) => {
     var sessionId = json["session_id"];
     var handleId = json["handle_id"];
     var plugin = json["event"]["plugin"];
+    var transport = json["event"]["transport"];
     var event = json["event"]["data"];
     var when = new Date(json["timestamp"] / 1000);
     if (plugin === "janus.plugin.videoroom") {
+      const room = rooms.get(event.room);
       switch (event.event) {
         case "joined":
           usersGauge.inc();
-          userCache[event.id] = {
+          usersCounter.inc();
+          users.set(handleId, {
             start: Date.now(),
             name: event.display,
-          };
-          if (!Object.keys(roomCache).includes(String(event.room))) {
-            roomGauge.inc();
-            roomCache[event.room] = 1;
-          } else {
-            roomCache[event.room] = ++roomCache[event.room];
+            feed: event.id,
+            room: event.room
+          });
+          if (!room) {
+            rooms.set(event.room, {
+              users: 1
+            })
+            roomGauge.inc()
+            roomTotal.inc()
+          }
+          else {
+            rooms.set(event.room, Object.assign(room, {users: (room.users + 1)}))
           }
           break;
         case "leaving":
-          usersGauge.dec();
-          let room = roomCache[event.room];
-          const userSession = userCache[event.id];
-          if (userSession) {
-            const durationMillis = Date.now() - userSession.start;
-            userSessionDurationHist.observe(Math.round(durationMillis / 60000));
-            delete userCache[event.id];
-          }
-          if (room >= 1) {
-            room--;
-            roomCache[event.room] = room;
-            if (room === 0) {
-              delete roomCache[event.room];
-              roomGauge.dec();
+          for (let e of users.entries()) {
+            const [id, user] = e
+            if (user.feed === event.id) {
+              const durationMillis = Date.now() - user.start;
+              let durationMinutes = Math.round(durationMillis / 60000);
+
+              if (durationMinutes > 60) {
+                durationMinutes = 60
+              }
+
+              userSessionDurationHist.observe(durationMinutes);
+              usersGauge.dec();
+              users.delete(id)
             }
-          } else {
-            delete roomCache[event.room];
-            roomGauge.dec();
+          }
+          for (let e of publishers.entries()) {
+            const [id, publisher] = e;
+            if (publisher.feed === event.id) {
+              publishers.delete(id)
+            }
+          }
+          if (room) {
+            if (room.users === 1) {
+              roomGauge.dec()
+              rooms.delete(event.room)
+            }
+            else {
+              rooms.set(event.room, Object.assign(room, {users: room.users - 1}))
+            }
+          }
+          break;
+        case "subscribing":
+          subscribingTotal.inc()
+          break;
+        case "subscribed":
+          subscribersTotal.inc()
+          for (let e of publishers.entries()) {
+            const [id, publisher] = e;
+            if (publisher.feed === event.feed) {
+              if (!publisher.subscribers.get(handleId)) {
+                subscribersGauge.inc();
+                publisher.subscribers.set(handleId, {
+                  start: Date.now(),
+                  feed: event.feed,
+                  session: sessionId
+                })
+              }
+            }
+          }
+          break;
+        case "published":
+          publishers.set(handleId, {
+            start: Date.now(),
+            feed: event.id,
+            subscribers: new Map(),
+            session: sessionId
+          })
+          publishersGauge.inc()
+          break;
+        case "unpublished":
+          let session;
+          for (let e of publishers.entries()) {
+            const [id, publisher] = e;
+
+            if (publisher.feed === event.id) {
+              session = publisher.session;
+            }
+          }
+
+          for (let e of publishers.entries()) {
+            const [id, publisher] = e;
+            if (publisher.feed === event.id) {
+              publishersGauge.dec();
+
+              if (publisher.subscribers.size > 0) {
+                subscribersGauge.dec(publisher.subscribers.size)
+              }
+
+              publishers.delete(id);
+            }
+            else {
+              for (let f of publisher.subscribers.entries()) {
+                const [id, subscriber] = f;
+
+                if (subscriber.session === session) {
+                  subscribersGauge.dec()
+                  publisher.subscribers.delete(id)
+                }
+              }
+            }
           }
       }
     }
-    // TODO: ???
+    else if (transport === "janus.transport.websockets") {
+      switch (event.event) {
+        case "connected":
+          webSocketConnectionsCounter.inc()
+          webSocketActiveConnections.inc();
+          break;
+        case "disconnected":
+          webSocketDisconnectsCounter.inc()
+          webSocketActiveConnections.dec();
+      }
+    }
   } else if (json.type === 256) {
     // Core event
     var name = "status";
